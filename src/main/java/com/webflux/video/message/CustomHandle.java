@@ -15,8 +15,8 @@ import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 
 @Component
 @Slf4j
@@ -59,11 +59,12 @@ public class CustomHandle implements WebSocketHandler {
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
+        DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
         String sessionId = session.getId();
         String query = session.getHandshakeInfo().getUri().getQuery();
         MultiValueMap<String, String> queryParams = parseQueryParams(query);
         String senderUsername = queryParams.getFirst("username");
-        log.info("senderUsername {}" , senderUsername);
+        log.info("connect Username {}" , senderUsername);
         String roomNumber = getRoomNumber(session);
 //        roomSessions.computeIfAbsent(roomNumber, k -> ConcurrentHashMap.newKeySet()).add(session);
         Flux<MessageEntity> existingMessages = messageRepository.findByRoomNumberAndIsDeleted(roomNumber,"N");
@@ -74,9 +75,9 @@ public class CustomHandle implements WebSocketHandler {
         Flux<WebSocketMessage> messageFlux = existingMessages
                 .map(message -> {
                     if (senderUsername != null && senderUsername.equals(message.getUsername())) {
-                        return message.getContent();
+                        return message.getContent()+ ":"+message.getUsername()+":"+ message.getCreateDate().format(DATE_TIME_FORMATTER);
                     } else {
-                        return new StringBuilder(message.getContent()).reverse().toString();
+                        return "*|c2VuZGVy|*"+ message.getContent() + ":"+message.getUsername()+":"+ message.getCreateDate().format(DATE_TIME_FORMATTER);
                     }
                 })
                 .map(session::textMessage);
@@ -86,7 +87,9 @@ public class CustomHandle implements WebSocketHandler {
                     return  session.textMessage(e);
                 });
         Flux<WebSocketMessage> outgoingMessageFlux = Flux.merge(messageFlux, incomingMessageFlux);
-        return session.send(outgoingMessageFlux);
+        return session.send(outgoingMessageFlux).then(Mono.fromRunnable(()->{
+                    log.info("send message from {}" , senderUsername);
+        }));
 //                .doFinally(signal -> {
 //                    roomSessions.getOrDefault(roomNumber, Collections.emptySet()).remove(session);
 //                });
