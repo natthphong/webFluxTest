@@ -8,8 +8,11 @@
 #    username: admin
 #    password: password
 #    driver-class-name: org.postgresql.Driver
+logging.level.org.springframework.r2dbc: DEBUG
 spring:
   r2dbc:
     url: r2dbc:postgresql://localhost:5432/postgres
     username: admin
     password: password
+  jpa:
+    show-sql: true

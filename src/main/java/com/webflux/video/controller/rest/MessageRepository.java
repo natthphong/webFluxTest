@@ -11,6 +11,7 @@ import reactor.core.publisher.Mono;
 @Repository
 public interface MessageRepository extends R2dbcRepository<MessageEntity, String> {
 
+    
     Flux<MessageEntity> findByRoomNumberAndIsDeleted(String roomNumber,String isDeleted);
 
 

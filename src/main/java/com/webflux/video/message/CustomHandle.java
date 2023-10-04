@@ -1,5 +1,9 @@
 package com.webflux.video.message;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.webflux.video.MessageEntity;
 import com.webflux.video.controller.rest.MessageRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -12,17 +16,33 @@ import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.util.UriUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Arrays;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Component
 @Slf4j
 public class CustomHandle implements WebSocketHandler {
 
 //    private final Map<String, Set<WebSocketSession>> roomSessions = new ConcurrentHashMap<>();
+
+    private  static ObjectMapper mapper = new ObjectMapper();
+    static {
+        mapper.registerModule(new JavaTimeModule());
+        mapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+        mapper.setTimeZone(TimeZone.getDefault());
+    }
+    private Sinks.Many<MessageEntity> sinks = Sinks.many().multicast().directBestEffort();
+    private Flux<MessageEntity> flux = sinks.asFlux();
+
+    private final Sinks.EmitFailureHandler emitFailureHandler =
+            (signalType, emitResult) -> emitResult.equals(Sinks.EmitResult.FAIL_NON_SERIALIZED);
 
     private final MessageRepository messageRepository;
 
@@ -64,38 +84,46 @@ public class CustomHandle implements WebSocketHandler {
         String query = session.getHandshakeInfo().getUri().getQuery();
         MultiValueMap<String, String> queryParams = parseQueryParams(query);
         String senderUsername = queryParams.getFirst("username");
+        log.info("sessionId {}" , sessionId);
         log.info("connect Username {}" , senderUsername);
         String roomNumber = getRoomNumber(session);
 //        roomSessions.computeIfAbsent(roomNumber, k -> ConcurrentHashMap.newKeySet()).add(session);
         Flux<MessageEntity> existingMessages = messageRepository.findByRoomNumberAndIsDeleted(roomNumber,"N");
+        log.info("fetch data existingMessages {}" , existingMessages);
+//        existingMessages.subscribe(message -> log.info("Message: {}", message));
+        Flux<WebSocketMessage> messageFlux = existingMessages
+                .map(MessageEntity::getContent)
+                .map(session::textMessage);
 //        Flux<WebSocketMessage> messageFlux = existingMessages
 //                .map(MessageEntity::getContent)
-//                .map(content -> new StringBuilder(content).toString())
 //                .map(session::textMessage);
-        Flux<WebSocketMessage> messageFlux = existingMessages
-                .map(message -> {
-                    if (senderUsername != null && senderUsername.equals(message.getUsername())) {
-                        return message.getContent()+ ":"+message.getUsername()+":"+ message.getCreateDate().format(DATE_TIME_FORMATTER);
-                    } else {
-                        return "*|c2VuZGVy|*"+ message.getContent() + ":"+message.getUsername()+":"+ message.getCreateDate().format(DATE_TIME_FORMATTER);
-                    }
-                })
-                .map(session::textMessage);
-        Flux<WebSocketMessage> incomingMessageFlux = session.receive()
-                .map(WebSocketMessage::getPayloadAsText).map(e-> {
-                    saveMessageToDB(roomNumber,e,senderUsername,sessionId);
-                    return  session.textMessage(e);
-                });
-        Flux<WebSocketMessage> outgoingMessageFlux = Flux.merge(messageFlux, incomingMessageFlux);
-        return session.send(outgoingMessageFlux).then(Mono.fromRunnable(()->{
-                    log.info("send message from {}" , senderUsername);
-        }));
-//                .doFinally(signal -> {
-//                    roomSessions.getOrDefault(roomNumber, Collections.emptySet()).remove(session);
+//        Flux<WebSocketMessage> incomingMessageFlux = session.receive()
+//                .map(WebSocketMessage::getPayloadAsText).map(e-> {
+//                    saveMessageToDB(roomNumber,e,senderUsername,sessionId);
+//                    return  session.textMessage(e);
 //                });
+
+
+//
+        session.receive()
+                .map(WebSocketMessage::getPayloadAsText).flatMap(e ->
+                    saveMessageToDB(roomNumber, e, senderUsername, sessionId)
+                ).subscribe(webSocketMessage -> sinks.emitNext(webSocketMessage, emitFailureHandler));
+        Flux<WebSocketMessage> incomingMessageFlux =  Mono.delay(Duration.ofMillis(100)).thenMany(flux.filter(it -> it.getRoomNumber().equals(roomNumber))
+                .map(it -> session.textMessage(it.getContent())));
+        Flux<WebSocketMessage> outgoingMessageFlux = Flux.merge(messageFlux,incomingMessageFlux);
+        return session.send(outgoingMessageFlux);
     }
 
-    private void saveMessageToDB(String roomNumber, String content,String username,String sessionId) {
+    private String toJson(MessageEntity object) {
+        try {
+            return mapper.writeValueAsString(object);
+        } catch (JsonProcessingException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+    private Mono<MessageEntity> saveMessageToDB(String roomNumber, String content,String username,String sessionId) {
         MessageEntity messageEntity = new MessageEntity();
         messageEntity.setCreateDate(LocalDateTime.now());
         messageEntity.setIsDeleted("N");
@@ -103,10 +131,8 @@ public class CustomHandle implements WebSocketHandler {
         messageEntity.setSessionId(sessionId);
         messageEntity.setRoomNumber(roomNumber);
         messageEntity.setContent(content);
-        Mono<MessageEntity> savedMessageMono = messageRepository.save(messageEntity);
-        savedMessageMono.subscribe(savedMessage -> {
-            log.info("Saved message: {}", savedMessage);
-        });
+        return  messageRepository.save(messageEntity);
+
     }
     private String getRoomNumber(WebSocketSession session) {
         String uriPath = session.getHandshakeInfo().getUri().getPath();

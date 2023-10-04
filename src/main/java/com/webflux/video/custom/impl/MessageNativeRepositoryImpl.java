@@ -46,8 +46,19 @@ public class MessageNativeRepositoryImpl implements MessageNativeRepository {
 
     @Override
     public Mono<MessageEntity> findById(final String id) {
+
+        Mono<MessageEntity> mono =  databaseClient.sql("SELECT * FROM tbl_message WHERE id = :id")
+                .bind("id", Long.valueOf(id))
+                .fetch()
+                .one()
+                .map(this::mapRowToMessageEntity);
+
+        Mono<Mono<Void>> test = null;
+        Mono<Void> testBlock = test.block();
+        MessageEntity m = mono.block();
+
         return databaseClient.sql("SELECT * FROM tbl_message WHERE id = :id")
-                .bind("id", Long.valueOf(id)) // Bind the id as a String
+                .bind("id", Long.valueOf(id))
                 .fetch()
                 .one()
                 .map(this::mapRowToMessageEntity);
@@ -67,7 +78,6 @@ public class MessageNativeRepositoryImpl implements MessageNativeRepository {
         message.setContent((String) map.get("content"));
         message.setSessionId((String) map.get("session_id"));
         message.setUsername((String) map.get("username"));
-        // Add mappings for other properties if needed
         return message;
     }
 
